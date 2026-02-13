@@ -28,6 +28,7 @@ public class TempoAtendimentoRedisService {
 	private static final int PRIORIZACAO_NORMAL = 0;
 	private static final int PRIORIZACAO_IDOSO = 1;
 	private static final int PRIORIZACAO_GESTANTE = 2;
+	private static final int PRIORIZACAO_EMERGENCIA = 3;
 
 	private final StringRedisTemplate redis;
 	private final ObjectMapper objectMapper;
@@ -60,6 +61,12 @@ public class TempoAtendimentoRedisService {
 				.countByEstadoSenhaCodTipoEstadoNotInAndTipoPriorizacaoCodTipoPriorizacao(estadosFinais, PRIORIZACAO_IDOSO);
 		long ativosGestante = atendimentosUnidadeRepository
 				.countByEstadoSenhaCodTipoEstadoNotInAndTipoPriorizacaoCodTipoPriorizacao(estadosFinais, PRIORIZACAO_GESTANTE);
+		long ativosEmergencia = atendimentosUnidadeRepository
+				.countByEstadoSenhaCodTipoEstadoNotInAndTipoPriorizacaoCodTipoPriorizacao(estadosFinais, PRIORIZACAO_EMERGENCIA);
+
+		long naFrenteGestante = ativosEmergencia + ativosGestante;
+		long naFrenteIdoso = naFrenteGestante + ativosIdoso;
+		long naFrenteNormal = naFrenteIdoso + ativosNormal;
 
 		Map<String, Object> payload = new LinkedHashMap<>();
 		payload.put("unidadeAtendimento", unidadeAtendimento);
@@ -67,9 +74,10 @@ public class TempoAtendimentoRedisService {
 		payload.put("medicosEmAtendimento", medicos);
 		payload.put("tempoMedioAtendimentoMin", TEMPO_MEDIO_ATENDIMENTO_MIN);
 
-		payload.put("normal", tipoPayload(ativosNormal, medicos));
-		payload.put("idoso", tipoPayload(ativosIdoso, medicos));
-		payload.put("gestante", tipoPayload(ativosGestante, medicos));
+		payload.put("emergencia", tipoPayload(ativosEmergencia, ativosEmergencia, medicos));
+		payload.put("gestante", tipoPayload(ativosGestante, naFrenteGestante, medicos));
+		payload.put("idoso", tipoPayload(ativosIdoso, naFrenteIdoso, medicos));
+		payload.put("normal", tipoPayload(ativosNormal, naFrenteNormal, medicos));
 
 		try {
 			String json = objectMapper.writeValueAsString(payload);
@@ -79,14 +87,15 @@ public class TempoAtendimentoRedisService {
 		}
 	}
 
-	private static Map<String, Object> tipoPayload(long senhasAtivas, long medicos) {
+	private static Map<String, Object> tipoPayload(long senhasAtivas, long senhasConsideradas, long medicos) {
 		Map<String, Object> p = new LinkedHashMap<>();
 		p.put("senhasAtivas", senhasAtivas);
+		p.put("senhasConsideradas", senhasConsideradas);
 		if (medicos <= 0) {
 			p.put("tempoEstimadoMin", null);
 			return p;
 		}
-		double minutos = (senhasAtivas * (double) TEMPO_MEDIO_ATENDIMENTO_MIN) / (double) medicos;
+		double minutos = (senhasConsideradas * (double) TEMPO_MEDIO_ATENDIMENTO_MIN) / (double) medicos;
 		long arredondadoParaCima = (long) Math.ceil(minutos);
 		p.put("tempoEstimadoMin", Math.max(0L, arredondadoParaCima));
 		return p;

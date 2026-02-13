@@ -38,7 +38,6 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
-import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -180,7 +179,7 @@ class EventProcessorValidationTests {
 				com.sus.fiap.consumer.persistence.entity.AtendimentosUnidade.class);
 		verify(atendimentosUnidadeRepository).save(captor.capture());
 		assertThat(captor.getValue().getEstadoSenha().getCodTipoEstado()).isEqualTo(91);
-		verify(redisQueueService, never()).enqueueNormal(anyString(), anyString(), anyDouble());
+		verify(redisQueueService, never()).enqueue(anyString(), any());
 		verify(redisQueueService, never()).saveAtendimentoSnapshot(anyString(), any());
 		verify(tempoAtendimentoRedisService).updateTempoMedioPorTipo(eq("UPA1"));
 		verify(idempotencyService).markProcessed(any());
@@ -226,7 +225,10 @@ class EventProcessorValidationTests {
 				com.sus.fiap.consumer.persistence.entity.AtendimentosUnidade.class);
 		verify(atendimentosUnidadeRepository).save(captor.capture());
 		assertThat(captor.getValue().getNrSenhaAtendimento()).isEqualTo(1);
-		verify(redisQueueService).enqueueNormal(eq("UPA1"), eq("123"), eq(1.0d));
+		ArgumentCaptor<com.sus.fiap.consumer.persistence.entity.AtendimentosUnidade> filaCaptor = ArgumentCaptor.forClass(
+				com.sus.fiap.consumer.persistence.entity.AtendimentosUnidade.class);
+		verify(redisQueueService).enqueue(eq("UPA1"), filaCaptor.capture());
+		assertThat(filaCaptor.getValue().getNrSeqAtendimento()).isEqualTo(123L);
 		verify(tempoAtendimentoRedisService).updateTempoMedioPorTipo(eq("UPA1"));
 		verify(idempotencyService).markProcessed(any());
 	}
@@ -291,7 +293,7 @@ class EventProcessorValidationTests {
 		assertThat(captor.getAllValues().get(1).getNrSenhaAtendimento()).isEqualTo(3);
 		assertThat(captor.getAllValues().get(1).getEstadoSenha().getCodTipoEstado()).isEqualTo(91);
 		verify(redisQueueService).remove(eq("UPA1"), eq("101"));
-		verify(redisQueueService, never()).enqueueNormal(anyString(), anyString(), anyDouble());
+		verify(redisQueueService, never()).enqueue(anyString(), any());
 		verify(redisQueueService, never()).saveAtendimentoSnapshot(anyString(), any());
 		verify(tempoAtendimentoRedisService).updateTempoMedioPorTipo(eq("UPA1"));
 		verify(idempotencyService).markProcessed(any());

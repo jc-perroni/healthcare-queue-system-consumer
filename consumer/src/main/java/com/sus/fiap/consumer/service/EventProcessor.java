@@ -321,9 +321,7 @@ public class EventProcessor {
 		atendimento = atendimentosUnidadeRepository.save(atendimento);
 
 		salvarEstadoAtendimento(atendimento.getNrSeqAtendimento(), pe.codTipoEstado, eventTime);
-
-		double score = (double) nrSenhaAtendimento;
-		redisQueueService.enqueueNormal(unidade, String.valueOf(atendimento.getNrSeqAtendimento()), score);
+		redisQueueService.enqueue(unidade, atendimento);
 		redisQueueService.saveAtendimentoSnapshot(unidade, atendimento);
 		return true;
 	}
@@ -385,7 +383,7 @@ public class EventProcessor {
 
 		salvarEstadoAtendimento(nrSeqAtendimento, EST_SENHA_PRIORIZADA_EMERGENCIA, eventTime);
 
-		redisQueueService.prioritize(unidade, String.valueOf(nrSeqAtendimento));
+		redisQueueService.enqueue(unidade, atendimento);
 		redisQueueService.saveAtendimentoSnapshot(unidade, atendimento);
 		return true;
 	}

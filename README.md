@@ -18,7 +18,7 @@ Consumer Kafka (Spring Boot) responsável por **consumir eventos de fila do SUS*
 - **Métrica operacional no Redis**: **tempo estimado de espera** por unidade e por tipo de fila (**normal / idoso / gestante**) com TTL curto.
 - **Logs** e tratamento de erro:
   - Mensagem inválida (envelope) é logada e **ignorada**
-  - Erros inesperados são propagados (para permitir retry conforme sua política Kafka)
+  - Erros inesperados são propagados (para permitir retry)
 
 ## Validações de negócio (regras)
 
@@ -65,7 +65,7 @@ O consumer espera a mensagem Kafka como JSON neste formato:
   "type": "RETIRADA_DE_SENHA",
   "occurredAt": "2026-02-13T12:34:56Z",
   "payload": {
-    "unidadeAtendimento": "HOSP-001",
+    "unidadeAtendimento": "UPA2",
     "nrSenhaAtendimento": 123,
     "codCadastroSusPaciente": 10,
     "timestamp": "2026-02-13T12:34:56Z"
@@ -171,7 +171,7 @@ Tabelas usadas diretamente pelo consumer:
 - `und_atdX.PONTO_MEDICOS`
   - Registro de entrada/saída do colaborador
 
-Tabelas de referência **necessárias** (precisam estar populadas no seu banco):
+Tabelas de referência **necessárias**:
 
 - `und_atdX.TIPO_PRIORIZACAO`
   - Códigos esperados: `0..3`
@@ -187,20 +187,27 @@ Chaves principais:
 - `event:processed:<UUID>`
   - Idempotência por `eventId` (TTL padrão: 7 dias)
 - `queue:zset:<unidadeAtendimento>`
-  - Fila por unidade (ZSET)
-- `queue:priorityCounter:<unidadeAtendimento>`
-  - Contador para score negativo de priorização
+  - **Fila única por unidade** (ZSET), com ordenação por prioridade + número da senha
 - `atendimento:<unidadeAtendimento>:<nrSeqAtendimento>`
   - Snapshot JSON do atendimento (TTL padrão: 7 dias)
 - `seq:ponto_medicos`
   - Sequência via `INCR` para `NR_SEQ_HORARIO` (coluna não identity; usada em `PONTO_MEDICOS`)
 - `metrics:tempoAtendimentoMedio:<unidadeAtendimento>`
-  - JSON com o **tempo estimado de espera** por tipo (normal/idoso/gestante), TTL curto (2 min)
+  - JSON com o **tempo estimado de espera** por tipo (normal/idoso/gestante/emergência), TTL curto (2 min)
 
 **Ordenação da fila (ZSET):**
 
-- Normal: score = `nrSenhaAtendimento`
-- Priorizado: score = `-N` (quanto menor, mais prioritário)
+A fila é **única**. A prioridade define quem é atendido primeiro:
+
+1. Emergência
+2. Gestante
+3. Idoso
+4. Normal
+
+Implementação de score (menor score = atende primeiro):
+
+- `score = prioridadeRank * 1_000_000 + nrSenhaNormalizada(1..999)`
+- `prioridadeRank`: emergência=0, gestante=1, idoso=2, normal=3
 
 ## Métrica no Redis: tempo médio/estimado de atendimento
 
@@ -232,29 +239,52 @@ Exemplo de valor salvo no Redis (string JSON):
   "calculadoEm": "2026-02-13T12:34:56Z",
   "medicosEmAtendimento": 2,
   "tempoMedioAtendimentoMin": 10,
-  "normal": { "senhasAtivas": 8, "tempoEstimadoMin": 40 },
-  "idoso": { "senhasAtivas": 1, "tempoEstimadoMin": 5 },
-  "gestante": { "senhasAtivas": 0, "tempoEstimadoMin": 0 }
+  "emergencia": {
+    "senhasAtivas": 2,
+    "senhasConsideradas": 2,
+    "tempoEstimadoMin": 10
+  },
+  "gestante": {
+    "senhasAtivas": 1,
+    "senhasConsideradas": 3,
+    "tempoEstimadoMin": 15
+  },
+  "idoso": {
+    "senhasAtivas": 2,
+    "senhasConsideradas": 5,
+    "tempoEstimadoMin": 25
+  },
+  "normal": {
+    "senhasAtivas": 8,
+    "senhasConsideradas": 13,
+    "tempoEstimadoMin": 65
+  }
 }
 ```
 
 Observações:
 
 - `medicosEmAtendimento` = quantidade de médicos com ponto **aberto** (`HORARIO_SAIDA IS NULL`).
-- `senhasAtivas` = quantidade de atendimentos cujo estado **não** está em: finalizado (6), expirada (90), cancelada (91).
+- `senhasAtivas` = quantidade de atendimentos daquele tipo cujo estado **não** está em: finalizado (6), expirada (90), cancelada (91).
+- `senhasConsideradas` = quantidade total que fica **na frente** (ou no mesmo grupo) considerando a prioridade global.
 - `tempoEstimadoMin` pode ser **null** se `medicosEmAtendimento` for 0 (sem médico no ponto).
 
 ### Fórmula usada (MVP)
 
-Para cada tipo (normal/idoso/gestante):
+Para cada tipo, o tempo estimado considera todas as prioridades **maiores** na frente:
 
-$$tempoEstimadoMin = \lceil (senhasAtivas \times tempoMedioAtendimentoMin) / medicosEmAtendimento \rceil$$
+- emergência: usa apenas `emergencia.senhasConsideradas`
+- gestante: considera `emergencia + gestante`
+- idoso: considera `emergencia + gestante + idoso`
+- normal: considera `emergencia + gestante + idoso + normal`
+
+$$tempoEstimadoMin = \lceil (senhasConsideradas \times tempoMedioAtendimentoMin) / medicosEmAtendimento \rceil$$
 
 Onde `tempoMedioAtendimentoMin` hoje é fixo em **10**.
 
 ## Como consumir o tempo médio/estimado
 
-A sua API (ou qualquer consumidor) só precisa ler a string JSON dessa chave no Redis.
+A API só precisa ler a string JSON dessa chave no Redis.
 
 ### Via redis-cli (debug)
 
@@ -262,11 +292,12 @@ A sua API (ou qualquer consumidor) só precisa ler a string JSON dessa chave no 
 redis-cli GET metrics:tempoAtendimentoMedio:UPA1
 ```
 
-### No seu serviço (recomendação)
+### No serviço
 
 - Faça `GET` na chave da unidade (ex.: `metrics:tempoAtendimentoMedio:UPA2`).
 - Se não existir (TTL expirou) ou JSON inválido, trate como **“sem estimativa no momento”**.
 - Use `tempoEstimadoMin` do tipo correspondente à fila que você quer mostrar:
+  - emergencia → `emergencia.tempoEstimadoMin`
   - normal → `normal.tempoEstimadoMin`
   - idoso → `idoso.tempoEstimadoMin`
   - gestante → `gestante.tempoEstimadoMin`
@@ -311,7 +342,7 @@ KAFKA_TOPIC_EVENTS=healthcare.queue.events.v1
 
 DB_URL=jdbc:postgresql://localhost:5432/healthcoredb
 DB_USERNAME=postgres
-DB_PASSWORD=pass123
+DB_PASSWORD=senha
 DB_DRIVER=org.postgresql.Driver
 DB_DIALECT=org.hibernate.dialect.PostgreSQLDialect
 
@@ -349,13 +380,3 @@ Rodar testes:
 - **Timezone do ponto**: o consumer converte `Instant` para `LocalTime` usando UTC. Se quiser horário local, ajuste a conversão.
 - **Dados obrigatórios no banco**: eventos dependem de `CADASTRO_SUS` (paciente) e `COLABORADORES` (médico). Quando não existem, o evento é ignorado.
 - **Idempotência**: a marcação do evento como processado acontece **após commit** da transação, reduzindo risco de “perder” evento se o banco falhar.
-
-## Troubleshooting
-
-- Se nada estiver sendo consumido:
-  - confira `KAFKA_BOOTSTRAP_SERVERS` e `KAFKA_TOPIC_EVENTS`
-  - valide o `group-id` (se você muda, pode reprocessar offsets)
-- Se der erro ao persistir estados/priorização:
-  - confira se `und_atdX.TIPO_ESTADO_SENHA` e `und_atdX.TIPO_PRIORIZACAO` têm os códigos esperados
-- Para inspecionar a fila no Redis:
-  - `ZRANGE queue:zset:HOSP-001 0 -1 WITHSCORES`

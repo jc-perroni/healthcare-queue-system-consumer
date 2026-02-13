@@ -1,0 +1,10 @@
+package com.sus.fiap.consumer.model;
+
+public enum EventType {
+	MEDICO_ENTRA_NO_PONTO,
+	MEDICO_SAI_DO_PONTO,
+	RETIRADA_DE_SENHA,
+	ATENDIMENTO_FINALIZADO,
+	SENHA_EXPIRADA,
+	SENHA_PRIORIZADA
+}

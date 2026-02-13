@@ -1,0 +1,34 @@
+services:
+  consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: healthcare-consumer
+    environment:
+      SERVER_PORT: ${SERVER_PORT:-8081}
+
+      # Modo "mesma rede": o consumer entra na rede do docker-compose do producer
+      # e acessa serviços por nome (kafka/postgres/redis).
+      # Para evitar colisão com .env local (DB_URL etc.), usamos prefixo CONSUMER_.
+      KAFKA_BOOTSTRAP_SERVERS: ${CONSUMER_KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      KAFKA_CONSUMER_GROUP: ${CONSUMER_KAFKA_CONSUMER_GROUP:-healthcare-queue-consumer}
+      KAFKA_TOPIC_EVENTS: ${CONSUMER_KAFKA_TOPIC_EVENTS:-healthcare.queue.events.v1}
+
+      DB_URL: ${CONSUMER_DB_URL:-jdbc:postgresql://postgres:5432/healthcoredb}
+      DB_USERNAME: ${CONSUMER_DB_USERNAME:-postgres}
+      DB_PASSWORD: ${CONSUMER_DB_PASSWORD:-pass123}
+      DB_DRIVER: ${CONSUMER_DB_DRIVER:-org.postgresql.Driver}
+      DB_DIALECT: ${CONSUMER_DB_DIALECT:-org.hibernate.dialect.PostgreSQLDialect}
+
+      REDIS_HOST: ${CONSUMER_REDIS_HOST:-redis}
+      REDIS_PORT: ${CONSUMER_REDIS_PORT:-6379}
+
+      APP_LOG_LEVEL: ${APP_LOG_LEVEL:-INFO}
+    networks:
+      - healthcare
+    restart: unless-stopped
+
+networks:
+  healthcare:
+    external: true
+    name: ${HEALTHCARE_NETWORK:-healthcare-network}

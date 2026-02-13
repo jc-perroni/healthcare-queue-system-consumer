@@ -1,0 +1,27 @@
+services:
+  consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: healthcare-consumer
+    environment:
+      SERVER_PORT: ${SERVER_PORT:-8081}
+
+      # Modo "localhost": o consumer roda em container, mas conecta nos serviços
+      # via PORTAS PUBLICADAS no HOST (Producer stack expondo portas).
+      # No macOS/Windows, containers acessam o host via host.docker.internal.
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-host.docker.internal:29092}
+      KAFKA_CONSUMER_GROUP: ${KAFKA_CONSUMER_GROUP:-healthcare-queue-consumer}
+      KAFKA_TOPIC_EVENTS: ${KAFKA_TOPIC_EVENTS:-healthcare.queue.events.v1}
+
+      DB_URL: ${DB_URL:-jdbc:postgresql://host.docker.internal:5432/healthcoredb}
+      DB_USERNAME: ${DB_USERNAME:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-pass123}
+      DB_DRIVER: ${DB_DRIVER:-org.postgresql.Driver}
+      DB_DIALECT: ${DB_DIALECT:-org.hibernate.dialect.PostgreSQLDialect}
+
+      REDIS_HOST: ${REDIS_HOST:-host.docker.internal}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+
+      APP_LOG_LEVEL: ${APP_LOG_LEVEL:-INFO}
+    restart: unless-stopped

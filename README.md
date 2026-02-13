@@ -12,10 +12,9 @@ Consumer Kafka (Spring Boot) responsável por **consumir eventos de fila do SUS*
   - `ESTADO_ATENDIMENTO` (histórico de estados por timestamp)
   - `PONTO_MEDICOS` (entrada/saída do médico no ponto)
 - **Persistência no Redis**:
-  - **ZSET por unidade** para representar a fila
-  - **priorização** por score negativo (emergência “fura fila”)
+  - **ZSET por unidade** para representar a **fila única** (prioridade + número da senha)
   - **snapshot JSON** por atendimento (debug/consulta rápida)
-- **Métrica operacional no Redis**: **tempo estimado de espera** por unidade e por tipo de fila (**normal / idoso / gestante**) com TTL curto.
+- **Métrica operacional no Redis**: **tempo estimado de espera** por unidade e por tipo/prioridade (**emergência / gestante / idoso / normal**) com TTL curto.
 - **Logs** e tratamento de erro:
   - Mensagem inválida (envelope) é logada e **ignorada**
   - Erros inesperados são propagados (para permitir retry)
@@ -351,6 +350,120 @@ REDIS_PORT=6379
 
 APP_LOG_LEVEL=INFO
 ```
+
+## Docker
+
+Este repositório inclui um Dockerfile na raiz.
+
+Este microsserviço sobe **apenas o consumer**. Os serviços **Kafka / Postgres / Redis** sobem no stack do **producer** (ou em outro ambiente) e o consumer se conecta via variáveis de ambiente.
+
+### Build da imagem
+
+```bash
+docker build -t healthcare-queue-consumer:latest .
+```
+
+### Rodar o container
+
+O consumer depende de Kafka, Postgres e Redis.
+
+Para ficar fácil para qualquer pessoa que **baixe a imagem**, a imagem já vem com defaults apontando para o **HOST** (macOS/Windows) via `host.docker.internal`, usando as portas padrão do stack:
+
+- Kafka: `host.docker.internal:29092`
+- Postgres: `jdbc:postgresql://host.docker.internal:5432/healthcoredb`
+- Redis: `host.docker.internal:6379`
+
+Assim, se o producer (ou o stack) estiver rodando e publicando essas portas no host, o comando mais simples é:
+
+```bash
+docker run --rm \
+  --name healthcare-queue-consumer \
+  -p 8081:8081 \
+  healthcare-queue-consumer:latest
+```
+
+Linux: `host.docker.internal` pode não existir por padrão; rode com:
+
+```bash
+docker run --rm \
+  --add-host=host.docker.internal:host-gateway \
+  --name healthcare-queue-consumer \
+  -p 8081:8081 \
+  healthcare-queue-consumer:latest
+```
+
+Exemplo (ajuste os hosts/ports conforme o seu ambiente):
+
+```bash
+docker run --rm \
+  --name healthcare-queue-consumer \
+  -e SERVER_PORT=8081 \
+  -e KAFKA_BOOTSTRAP_SERVERS=host.docker.internal:29092 \
+  -e KAFKA_TOPIC_EVENTS=healthcare.queue.events.v1 \
+  -e DB_URL=jdbc:postgresql://host.docker.internal:5432/healthcoredb \
+  -e DB_USERNAME=postgres \
+  -e DB_PASSWORD=senha \
+  -e REDIS_HOST=host.docker.internal \
+  -e REDIS_PORT=6379 \
+  -e APP_LOG_LEVEL=INFO \
+  healthcare-queue-consumer:latest
+```
+
+Observação: no Docker o consumer usa `SERVER_PORT=8081` por padrão (para não conflitar com o producer em `8080`).
+
+### Rodar via Docker Compose (somente o consumer)
+
+O arquivo `docker-compose.yml` na raiz sobe apenas o consumer.
+
+```bash
+docker compose up -d --build
+```
+
+Por padrão, este compose usa o modo mais simples: conecta no Kafka/Postgres/Redis via **HOST** (`host.docker.internal`) e as **portas publicadas** pelo stack do producer.
+
+Atualização importante (Kafka): em muitos stacks Kafka, o broker anuncia (advertised) `localhost:29092`. Quando o consumer roda **em container**, ele **não consegue** acessar esse `localhost`.
+
+Por isso, o modo padrão recomendado do compose é: consumer na **mesma rede Docker** do stack do producer, usando `kafka:9092`.
+
+Se a sua rede for diferente, sobrescreva com `HEALTHCARE_NETWORK`.
+
+> Dentro de um container, `localhost` aponta para o próprio container. Por isso usamos `host.docker.internal`.
+
+Se você preferir rodar o consumer **na mesma rede Docker** do stack do producer (acessando `kafka:9092`, `postgres:5432`, `redis:6379`), use o compose alternativo:
+
+```bash
+docker network ls
+HEALTHCARE_NETWORK=<NOME_DA_REDE_DO_PRODUCER> docker compose -f docker-compose.producer-network.yml up -d --build
+```
+
+Nesse modo, você pode sobrescrever endpoints com prefixo `CONSUMER_`:
+
+- `CONSUMER_KAFKA_BOOTSTRAP_SERVERS` (default: `kafka:9092`)
+- `CONSUMER_DB_URL` (default: `jdbc:postgresql://postgres:5432/healthcoredb`)
+- `CONSUMER_REDIS_HOST` (default: `redis`)
+
+### Consigo rodar “como localhost”?
+
+Depende de **onde o consumer está rodando**:
+
+- Se você roda o consumer **fora do Docker** (Java direto na sua máquina), então `localhost` funciona normalmente, porque `localhost` = sua máquina.
+- Se você roda o consumer **dentro de um container**, então `localhost` = **o próprio container**. Nesse caso, ele **não** consegue acessar Kafka/Postgres/Redis do host via `localhost`.
+
+Opções práticas no macOS:
+
+1. Consumer em container → serviços no host via `host.docker.internal`
+
+Se o stack do producer estiver rodando no Docker e publicando portas no host (ex.: Kafka `29092`, Postgres `5432`, Redis `6379`), você pode subir o consumer com o compose de “modo localhost”:
+
+```bash
+docker compose -f docker-compose.localhost.yml up -d --build
+```
+
+2. Consumer em container → serviços em outros containers (mesma rede)
+
+Use o [docker-compose.yml](docker-compose.yml) e conecte o consumer na mesma rede do producer (serviços por nome: `kafka:9092`, `postgres:5432`, `redis:6379`).
+
+> Dica: se você tentou `docker-compose up`, prefira `docker compose up` (Docker Compose v2).
 
 ## Como rodar
 

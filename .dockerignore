@@ -1,0 +1,14 @@
+.git
+**/.git
+**/.gitignore
+**/.DS_Store
+**/target
+**/node_modules
+.vscode
+**/.classpath
+**/.project
+**/.settings
+
+# optional secrets/env
+.env
+**/.env

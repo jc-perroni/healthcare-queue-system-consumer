@@ -1,0 +1,37 @@
+services:
+  consumer:
+    image: healthcare-queue-consumer:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: healthcare-consumer
+    environment:
+      SERVER_PORT: "8081"
+      APP_LOG_LEVEL: "INFO"
+
+      # Modo padrão: mesma rede do stack do producer.
+      # Motivo: em muitos stacks Kafka, o broker anuncia (advertised) "localhost:29092".
+      # Um consumer em container NÃO consegue se conectar a esse localhost.
+      # Na mesma rede, usamos o listener interno: kafka:9092.
+      KAFKA_BOOTSTRAP_SERVERS: ${CONSUMER_KAFKA_BOOTSTRAP_SERVERS:-kafka:9092}
+      KAFKA_CONSUMER_GROUP: ${CONSUMER_KAFKA_CONSUMER_GROUP:-healthcare-queue-consumer}
+      KAFKA_TOPIC_EVENTS: ${CONSUMER_KAFKA_TOPIC_EVENTS:-healthcare.queue.events.v1}
+
+      DB_URL: ${CONSUMER_DB_URL:-jdbc:postgresql://postgres:5432/healthcoredb}
+      DB_USERNAME: ${CONSUMER_DB_USERNAME:-postgres}
+      DB_PASSWORD: ${CONSUMER_DB_PASSWORD:-pass123}
+
+      REDIS_HOST: ${CONSUMER_REDIS_HOST:-redis}
+      REDIS_PORT: ${CONSUMER_REDIS_PORT:-6379}
+    ports:
+      - "8081:8081"
+    networks:
+      - healthcare
+    restart: unless-stopped
+
+networks:
+  healthcare:
+    external: true
+    # Default alinhado ao nome da rede do compose do producer neste workspace.
+    # Se a sua rede for diferente, sobrescreva com HEALTHCARE_NETWORK.
+    name: ${HEALTHCARE_NETWORK:-healthcare-queue-system-producer_default}

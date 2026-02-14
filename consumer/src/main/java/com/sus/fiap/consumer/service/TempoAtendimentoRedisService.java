@@ -12,14 +12,16 @@ import com.sus.fiap.consumer.persistence.repository.PontoColaboradorRepository;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 @Service
 public class TempoAtendimentoRedisService {
 	private static final Logger log = LoggerFactory.getLogger(TempoAtendimentoRedisService.class);
-	private static final Duration TTL = Duration.ofMinutes(2);
 	private static final int TEMPO_MEDIO_ATENDIMENTO_MIN = 10;
+
+	private final Duration ttl;
 
 	private static final int EST_ATENDIMENTO_FINALIZADO = 6;
 	private static final int EST_SENHA_EXPIRADA = 90;
@@ -39,12 +41,14 @@ public class TempoAtendimentoRedisService {
 			StringRedisTemplate redis,
 			ObjectMapper objectMapper,
 			AtendimentosUnidadeRepository atendimentosUnidadeRepository,
-			PontoColaboradorRepository pontoColaboradorRepository
+			PontoColaboradorRepository pontoColaboradorRepository,
+			@Value("${consumer.metrics.tempoAtendimento.ttl:2m}") Duration ttl
 	) {
 		this.redis = redis;
 		this.objectMapper = objectMapper;
 		this.atendimentosUnidadeRepository = atendimentosUnidadeRepository;
 		this.pontoColaboradorRepository = pontoColaboradorRepository;
+		this.ttl = ttl;
 	}
 
 	public void updateTempoMedioPorTipo(String unidadeAtendimento) {
@@ -81,7 +85,7 @@ public class TempoAtendimentoRedisService {
 
 		try {
 			String json = objectMapper.writeValueAsString(payload);
-			redis.opsForValue().set(key(unidadeAtendimento), json, TTL);
+			redis.opsForValue().set(key(unidadeAtendimento), json, ttl);
 		} catch (Exception e) {
 			log.warn("Falha ao salvar tempo medio no Redis: unidade={}", unidadeAtendimento, e);
 		}

@@ -192,7 +192,161 @@ Chaves principais:
 - `seq:ponto_medicos`
   - Sequência via `INCR` para `NR_SEQ_HORARIO` (coluna não identity; usada em `PONTO_MEDICOS`)
 - `metrics:tempoAtendimentoMedio:<unidadeAtendimento>`
-  - JSON com o **tempo estimado de espera** por tipo (normal/idoso/gestante/emergência), TTL curto (2 min)
+  - JSON com o **tempo estimado de espera** por tipo (normal/idoso/gestante/emergência), TTL curto (default: 2 min; configurável)
+
+## API de Métrica (para consumo externo)
+
+Para evitar expor o Redis (que também contém snapshots com `codCadastroSusPaciente` e outras chaves internas), o consumer expõe um endpoint HTTP que retorna **somente** a métrica agregada:
+
+- `GET /api/metrics/tempo-espera/{unidade}`
+  - Ex.: `GET /api/metrics/tempo-espera/UPA1`
+  - Respostas: `200` (JSON), `404` (sem métrica/expirada), `401` (API key inválida)
+
+URL base:
+
+- Local (rodando via `./mvnw spring-boot:run`): `http://localhost:8081`
+- Docker (com `-p 8081:8081`): `http://localhost:8081`
+
+> Se você mudar a porta, ajuste via `SERVER_PORT` (e use a mesma no `curl`).
+
+Unidade (`{unidade}`) aceita variações e é normalizada:
+
+- `UPA1`, `upa1` → `UPA1`
+- `UND_ATD2`, `und_atd2` → `UPA2`
+- Se vier vazio/branco, o default é `UPA1`
+
+### Exemplo de chamada
+
+Sem API key (default):
+
+```bash
+curl -sS http://localhost:8081/api/metrics/tempo-espera/UPA1
+```
+
+Com API key habilitada:
+
+```bash
+curl -sS \
+  -H "X-API-KEY: sua-chave-aqui" \
+  http://localhost:8081/api/metrics/tempo-espera/UPA1
+```
+
+### Endpoint “somente meu tempo de espera” (unidade + tipo)
+
+Se você quer retornar **somente** o tempo estimado de espera (um número, em minutos) para o tipo do cliente requisitante, use:
+
+- `GET /api/metrics/tempo-espera?unidade=UPA1&tipo=1`
+
+Onde `tipo` é:
+
+- `0` = Normal
+- `1` = Idoso
+- `2` = Gestante
+- `3` = Emergência
+
+Exemplo:
+
+```bash
+curl -sS "http://localhost:8081/api/metrics/tempo-espera?unidade=UPA1&tipo=3"
+```
+
+Resposta (`200`):
+
+```json
+{ "tempoEstimadoMin": 10 }
+```
+
+Respostas possíveis:
+
+- `200` com `{ "tempoEstimadoMin": <número> }` quando existe métrica
+- `200` com `{ "tempoEstimadoMin": null }` quando existe métrica mas não há médicos no ponto
+- `404` quando a métrica não existe/expirou
+- `400` quando `tipo` não está entre `0..3`
+
+### Endpoint “meu tempo” por paciente SUS (codCadastroSusPaciente)
+
+Se você prefere passar somente o identificador do paciente SUS e deixar o consumer localizar o atendimento ativo (sequencial) internamente, use:
+
+- `GET /api/metrics/tempo-espera?unidade=UPA1&codSus=10`
+
+Esse modo:
+
+- Busca o atendimento **ativo** do paciente no Postgres (no schema da unidade)
+- Usa o `nrSeqAtendimento` encontrado para localizar o score real na fila `queue:zset:<unidade>` (Redis)
+- Calcula quantas pessoas estão na frente (ZCOUNT por score)
+- Converte para tempo estimado considerando `medicosEmAtendimento`
+
+Exemplo de resposta (`200`):
+
+```json
+{
+  "tempoEstimadoMin": 65,
+  "pessoasNaFrente": 13,
+  "medicosEmAtendimento": 2,
+  "nrSeqAtendimento": 123
+}
+```
+
+Proteção:
+
+- `METRICS_API_KEY` no ambiente do consumer.
+- Envie o header `X-API-KEY: <sua_chave>` (ou altere o nome via `METRICS_API_KEY_HEADER`).
+
+Exemplo com header customizado:
+
+```bash
+export METRICS_API_KEY="minha-chave"
+export METRICS_API_KEY_HEADER="X-METRICS-KEY"
+
+curl -sS \
+  -H "X-METRICS-KEY: minha-chave" \
+  http://localhost:8081/api/metrics/tempo-espera/UPA1
+```
+
+Se `METRICS_API_KEY` estiver definido e:
+
+- o header não for enviado → `401`
+- o header for enviado com valor incorreto → `401`
+
+### Como a métrica vem (payload)
+
+O endpoint retorna **exatamente** o JSON agregado salvo no Redis na chave `metrics:tempoAtendimentoMedio:<UPAX>`.
+
+Exemplo de resposta (`200`):
+
+```json
+{
+  "unidadeAtendimento": "UPA1",
+  "calculadoEm": "2026-02-13T12:34:56Z",
+  "medicosEmAtendimento": 2,
+  "tempoMedioAtendimentoMin": 10,
+  "emergencia": {
+    "senhasAtivas": 2,
+    "senhasConsideradas": 2,
+    "tempoEstimadoMin": 10
+  },
+  "gestante": {
+    "senhasAtivas": 1,
+    "senhasConsideradas": 3,
+    "tempoEstimadoMin": 15
+  },
+  "idoso": {
+    "senhasAtivas": 2,
+    "senhasConsideradas": 5,
+    "tempoEstimadoMin": 25
+  },
+  "normal": {
+    "senhasAtivas": 8,
+    "senhasConsideradas": 13,
+    "tempoEstimadoMin": 65
+  }
+}
+```
+
+Observações rápidas:
+
+- `tempoEstimadoMin` pode vir `null` quando `medicosEmAtendimento = 0`
+- se a chave expirou (TTL curto), a API retorna `404`
 
 **Ordenação da fila (ZSET):**
 
@@ -216,7 +370,13 @@ O consumer calcula e salva no Redis uma visão “rápida” para sua API consul
 
 - Chave: `metrics:tempoAtendimentoMedio:<unidadeAtendimento>`
   - Ex.: `metrics:tempoAtendimentoMedio:UPA1`
-- TTL: **2 minutos**
+- TTL: **default 2 minutos** (configurável via `consumer.metrics.tempoAtendimento.ttl`)
+
+Você pode configurar por env (útil no Docker):
+
+- `CONSUMER_METRICS_TEMPOATENDIMENTO_TTL=10m`
+
+Formatos aceitos (Spring Duration): `2m`, `10m`, `30s`, `PT2M`.
 
 ### Quando atualiza
 
@@ -283,7 +443,11 @@ Onde `tempoMedioAtendimentoMin` hoje é fixo em **10**.
 
 ## Como consumir o tempo médio/estimado
 
-A API só precisa ler a string JSON dessa chave no Redis.
+A forma recomendada (principalmente se sua API recebe requisições externas) é chamar o endpoint HTTP do consumer:
+
+- `GET http://localhost:8081/api/metrics/tempo-espera/{unidade}`
+
+O acesso direto ao Redis fica mais para debug/observabilidade.
 
 ### Via redis-cli (debug)
 

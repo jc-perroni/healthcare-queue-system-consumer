@@ -9,6 +9,10 @@ services:
       SERVER_PORT: "8081"
       APP_LOG_LEVEL: "INFO"
 
+      # Metrics API (opcional). Se METRICS_API_KEY estiver vazio, não exige header.
+      METRICS_API_KEY: ${METRICS_API_KEY:-}
+      METRICS_API_KEY_HEADER: ${METRICS_API_KEY_HEADER:-X-API-KEY}
+
       # Modo padrão: mesma rede do stack do producer.
       # Motivo: em muitos stacks Kafka, o broker anuncia (advertised) "localhost:29092".
       # Um consumer em container NÃO consegue se conectar a esse localhost.
